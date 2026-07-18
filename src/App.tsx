@@ -1,31 +1,73 @@
-import React, { useState, useEffect } from 'react';
-// 引入 Lucide 圖示以提供高品質的 UI 視覺引導與極佳的視覺美感
-import { 
-  Upload, 
-  Download, 
-  Check, 
-  AlertTriangle, 
-  AlertCircle, 
-  FileSpreadsheet, 
-  User, 
-  DollarSign, 
-  BarChart2, 
-  ArrowRight, 
-  Table, 
-  Sparkles, 
-  BookOpen, 
-  HelpCircle, 
-  ChevronDown, 
-  ChevronUp, 
-  RefreshCw, 
-  FileText, 
+import { useState } from 'react';
+import type { ChangeEvent, DragEvent } from 'react';
+import * as XLSX from 'xlsx';
+import {
+  Upload,
+  Download,
+  AlertTriangle,
+  AlertCircle,
+  FileSpreadsheet,
+  ArrowRight,
+  Table,
+  Sparkles,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  RefreshCw,
+  FileText,
   CheckCircle2,
   Info,
   Layers,
   Copy,
-  TrendingUp,
-  Tag
 } from 'lucide-react';
+
+type CellValue = string | number | boolean;
+type RawRow = CellValue[];
+type SubtotalType = '' | '小計' | '合計' | '總計';
+type DataTab = 'versionB' | 'versionA' | 'raw';
+type FeynmanTab = 'concept' | 'scenario' | 'lab';
+type DownloadType = 'A' | 'B';
+
+interface ProcessedRow {
+  originalRowIndex: number;
+  cells: CellValue[];
+  filledDownFlags: boolean[];
+  isSubtotal: boolean;
+  subtotalType: SubtotalType;
+  isGroupHeader: boolean;
+}
+
+interface Diagnostics {
+  headerTrashRows: number;
+  subtotalRowsCount: number;
+  filledDownCellsCount: number;
+  formattedDatesCount: number;
+  originalGrandTotal: number;
+  calculatedDetailTotal: number;
+  isReconciled: boolean;
+  diffAmount: number;
+}
+
+interface Kpis {
+  originalRowsCount: number;
+  cleanedRowsCount: number;
+  uniqueCustomersCount: number;
+  uniqueProductsCount: number;
+  uniqueSalesCount: number;
+  totalSales: number;
+  totalQty: number;
+  totalProfit: number;
+  maxSalesVal: number;
+  salesColLetter: string;
+  dateColLetter: string;
+  custColLetter: string;
+  prodIdColLetter: string;
+  qtyColLetter: string;
+  priceColLetter: string;
+  amountColLetter: string;
+  profitColLetter: string;
+  regionColLetter: string;
+}
 
 // ==========================================
 // 內建 ERP 壞報表範例 CSV 數據 (供使用者一鍵測試)
@@ -64,48 +106,32 @@ export default function App() {
   // ==========================================
   // 狀態管理 (State)
   // ==========================================
-  const [xlsxLoaded, setXlsxLoaded] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [fileName, setFileName] = useState('');
-  const [loading, setLoading] = useState(false);
   
   // 原始與清洗後的資料集
-  const [headers, setHeaders] = useState([]);
-  const [rawPreview, setRawPreview] = useState([]);
-  const [versionA, setVersionA] = useState([]); // 含小計對帳表
-  const [versionB, setVersionB] = useState([]); // 純明細分析表
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [rawPreview, setRawPreview] = useState<RawRow[]>([]);
+  const [versionA, setVersionA] = useState<ProcessedRow[]>([]); // 含小計對帳表
+  const [versionB, setVersionB] = useState<ProcessedRow[]>([]); // 純明細分析表
   
   // 分析指標與診斷數據
-  const [diagnostics, setDiagnostics] = useState(null);
-  const [kpis, setKpis] = useState(null);
+  const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [kpis, setKpis] = useState<Kpis | null>(null);
   
   // 介面切換
-  const [activeTab, setActiveTab] = useState('versionB'); // 'versionB' | 'versionA' | 'raw'
-  const [activeFeynmanTab, setActiveFeynmanTab] = useState('concept');
+  const [activeTab, setActiveTab] = useState<DataTab>('versionB'); // 'versionB' | 'versionA' | 'raw'
+  const [activeFeynmanTab, setActiveFeynmanTab] = useState<FeynmanTab>('concept');
   const [isDebugOpen, setIsDebugOpen] = useState(false);
   const [showCopiedText, setShowCopiedText] = useState('');
-
-  // ==========================================
-  // 安全加載 SheetJS CDN (避免伺服器端編譯無法解析 xlsx 的問題)
-  // ==========================================
-  useEffect(() => {
-    if (typeof window !== 'undefined' && !window.XLSX) {
-      const script = document.createElement('script');
-      script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-      script.onload = () => setXlsxLoaded(true);
-      document.head.appendChild(script);
-    } else {
-      setXlsxLoaded(true);
-    }
-  }, []);
 
   // ==========================================
   // 工具函數 (Utilities)
   // ==========================================
   
   // 將數字索引轉換為 Excel 的欄位英文字母 (A, B, C... Z, AA...)
-  const getColLetter = (index) => {
-    if (index === -1 || index === undefined) return "?";
+  const getColLetter = (index: number) : string => {
+    if (index < 0) return "?";
     let temp = index;
     let letter = "";
     while (temp >= 0) {
@@ -116,7 +142,7 @@ export default function App() {
   };
 
   // 1. 日期轉換器：安全處理 Excel 序號與各種日期字串
-  const formatExcelDate = (val) => {
+  const formatExcelDate = (val: CellValue | null | undefined): string => {
     if (!val) return '';
     if (typeof val === 'number') {
       const date = new Date((val - 25569) * 86400 * 1000);
@@ -134,7 +160,7 @@ export default function App() {
     return str; 
   };
 
-  const formatDateObject = (date) => {
+  const formatDateObject = (date: Date): string => {
     const y = date.getFullYear();
     const m = String(date.getMonth() + 1).padStart(2, '0');
     const d = String(date.getDate()).padStart(2, '0');
@@ -142,7 +168,7 @@ export default function App() {
   };
 
   // 2. 數值解析器：拔除千分位、貨幣符號、前後空白，強制轉 float
-  const parseNumeric = (val) => {
+  const parseNumeric = (val: CellValue | null | undefined): number => {
     if (val === null || val === undefined) return 0;
     if (typeof val === 'number') return val;
     const cleaned = String(val).replace(/[,$\s%]/g, '');
@@ -151,7 +177,7 @@ export default function App() {
   };
 
   // 複製文字提示
-  const copyToClipboard = (text, label) => {
+  const copyToClipboard = (text: string, label: string): void => {
     const textArea = document.createElement('textarea');
     textArea.value = text;
     document.body.appendChild(textArea);
@@ -169,8 +195,7 @@ export default function App() {
   // ==========================================
   // 核心清洗引擎 (Data Cleaning Engine)
   // ==========================================
-  const processDataRows = (rawRows, name) => {
-    setLoading(true);
+  const processDataRows = (rawRows: RawRow[], name: string): void => {
     setFileName(name);
     setRawPreview(rawRows.slice(0, 25)); 
 
@@ -196,7 +221,12 @@ export default function App() {
 
       if (headerIdx === -1) headerIdx = 4;
 
-      const originalHeaders = rawRows[headerIdx].map(h => String(h || '').trim());
+      const headerRow = rawRows[headerIdx];
+      if (!headerRow) {
+        throw new Error('找不到有效的欄位名稱列。');
+      }
+
+      const originalHeaders = headerRow.map(h => String(h ?? '').trim());
       setHeaders(originalHeaders);
 
       // 定位關鍵欄位之索引位置
@@ -204,7 +234,6 @@ export default function App() {
       const dateColIdx = originalHeaders.findIndex(h => h.includes('日期'));
       const custColIdx = originalHeaders.findIndex(h => h.includes('客戶'));
       const prodIdColIdx = originalHeaders.findIndex(h => h.includes('產品代號') || h.includes('品項') || h.includes('產品'));
-      const prodNameColIdx = originalHeaders.findIndex(h => h.includes('產品名稱') || h.includes('品名'));
       const qtyColIdx = originalHeaders.findIndex(h => h.includes('數量'));
       const priceColIdx = originalHeaders.findIndex(h => h.includes('單價'));
       const amountColIdx = originalHeaders.findIndex(h => h.includes('金額') || h.includes('銷售金額'));
@@ -212,23 +241,23 @@ export default function App() {
       const regionColIdx = originalHeaders.findIndex(h => h.includes('區域'));
 
       // 定義需要【向下填滿 (Fill Down)】的維度欄位索引
-      const fillDownCols = [];
+      const fillDownCols: number[] = [];
       if (salesColIdx !== -1) fillDownCols.push(salesColIdx);
       if (dateColIdx !== -1) fillDownCols.push(dateColIdx);
       if (custColIdx !== -1) fillDownCols.push(custColIdx);
       if (regionColIdx !== -1) fillDownCols.push(regionColIdx);
 
       // 定義需要【資料型態轉換】的數值欄位索引
-      const numericCols = [];
+      const numericCols: number[] = [];
       if (qtyColIdx !== -1) numericCols.push(qtyColIdx);
       if (priceColIdx !== -1) numericCols.push(priceColIdx);
       if (amountColIdx !== -1) numericCols.push(amountColIdx);
       if (profitColIdx !== -1) numericCols.push(profitColIdx);
 
       // 狀態追蹤器
-      const lastNonEmpty = {};
-      const versionARows = []; 
-      const versionBRows = []; 
+      const lastNonEmpty: Record<number, string> = {};
+      const versionARows: ProcessedRow[] = []; 
+      const versionBRows: ProcessedRow[] = []; 
       
       let missingValueCount = 0;
       let subtotalRowCount = 0;
@@ -239,9 +268,9 @@ export default function App() {
       let totalQty = 0;
       let totalProfit = 0;
       let maxSalesVal = 0;
-      const uniqueCusts = new Set();
-      const uniqueProds = new Set();
-      const uniqueSales = new Set();
+      const uniqueCusts = new Set<CellValue>();
+      const uniqueProds = new Set<CellValue>();
+      const uniqueSales = new Set<CellValue>();
 
       // 遍歷欄位名稱列之後的每一行數據
       for (let i = headerIdx + 1; i < rawRows.length; i++) {
@@ -265,16 +294,24 @@ export default function App() {
 
         // 偵測是否為小計、合計、或總計列
         let isSubtotal = false;
-        let subtotalType = '';
-        row.forEach(cell => {
-          const s = String(cell || '').trim();
-          if (s.includes('小計') || s.includes('合計') || s.includes('總計') || s.toLowerCase().includes('total') || s.toLowerCase().includes('subtotal')) {
+        let subtotalType: SubtotalType = '';
+        for (const cell of row) {
+          const s = String(cell ?? '').trim();
+          const lower = s.toLowerCase();
+          if (
+            s.includes('小計') ||
+            s.includes('合計') ||
+            s.includes('總計') ||
+            lower.includes('total') ||
+            lower.includes('subtotal')
+          ) {
             isSubtotal = true;
-            if (s.includes('小計')) subtotalType = '小計';
-            else if (s.includes('總計') || s.toLowerCase().includes('grand total')) subtotalType = '總計';
+            if (s.includes('小計') || lower.includes('subtotal')) subtotalType = '小計';
+            else if (s.includes('總計') || lower.includes('grand total')) subtotalType = '總計';
             else subtotalType = '合計';
+            break;
           }
-        });
+        }
 
         // 雙版本分流處理
         if (isSubtotal) {
@@ -314,11 +351,11 @@ export default function App() {
         }
 
         // 執行資料清洗與「向下填滿」
-        const cleanedCells = [];
+        const cleanedCells: CellValue[] = [];
         const filledDownFlags = Array(row.length).fill(false);
 
         for (let colIdx = 0; colIdx < row.length; colIdx++) {
-          let cellVal = String(row[colIdx] || '').trim();
+          let cellVal: CellValue = String(row[colIdx] ?? '').trim();
 
           // 1. 向下填滿邏輯
           if (fillDownCols.includes(colIdx)) {
@@ -355,7 +392,7 @@ export default function App() {
           cleanedCells.push(cellVal);
         }
 
-        const rowObj = {
+        const rowObj: ProcessedRow = {
           originalRowIndex: i,
           cells: cleanedCells,
           filledDownFlags,
@@ -435,60 +472,80 @@ export default function App() {
         regionColLetter: getColLetter(regionColIdx)
       });
 
-    } catch (err) {
-      console.error("清洗出錯：", err);
+    } catch (error: unknown) {
+      console.error("清洗出錯：", error);
       alert("❌ 報表解析失敗，請確認檔案格式是否正確。");
-    } finally {
-      setLoading(false);
     }
   };
 
   // ==========================================
   // 檔案上傳事件監聽
   // ==========================================
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>): void => {
+    const file = e.target.files?.[0];
     if (file) processExcelFile(file);
   };
 
-  const processExcelFile = (file) => {
+  const processExcelFile = (file: File): void => {
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const data = new Uint8Array(e.target.result);
-      const XLSX = typeof window !== 'undefined' ? window.XLSX : null;
-      if (!XLSX) {
-        alert("⚠️ 試算表解析套件 (SheetJS) 還在下載中，請稍候再試。");
-        return;
+    reader.onload = (): void => {
+      try {
+        if (!(reader.result instanceof ArrayBuffer)) {
+          throw new Error('FileReader 未回傳有效的 ArrayBuffer。');
+        }
+
+        const data = new Uint8Array(reader.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+
+        if (!firstSheetName) {
+          throw new Error('活頁簿中找不到工作表。');
+        }
+
+        const worksheet = workbook.Sheets[firstSheetName];
+        if (!worksheet) {
+          throw new Error(`找不到工作表：${firstSheetName}`);
+        }
+
+        const rawRows = XLSX.utils.sheet_to_json<RawRow>(worksheet, {
+          header: 1,
+          defval: '',
+          raw: true,
+        });
+        processDataRows(rawRows, file.name);
+      } catch (error: unknown) {
+        console.error('Excel 檔案解析失敗：', error);
+        const message = error instanceof Error ? error.message : '未知錯誤';
+        alert(`❌ Excel 檔案解析失敗：${message}`);
       }
-      const workbook = XLSX.read(data, { type: 'array' });
-      const firstSheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[firstSheetName];
-      const rawRows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
-      processDataRows(rawRows, file.name);
+    };
+    reader.onerror = (): void => {
+      console.error('FileReader 讀取失敗：', reader.error);
+      alert('❌ 檔案讀取失敗，請重新選擇檔案。');
     };
     reader.readAsArrayBuffer(file);
   };
 
-  const handleDragOver = (e) => {
+  const handleDragOver = (e: DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
     setIsDragging(true);
   };
 
-  const handleDragLeave = () => {
+  const handleDragLeave = (): void => {
     setIsDragging(false);
   };
 
-  const handleDrop = (e) => {
+  const handleDrop = (e: DragEvent<HTMLDivElement>): void => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
+    const file = e.dataTransfer.files?.[0];
     if (file) processExcelFile(file);
   };
 
   // 載入內建範例數據
-  const loadSampleData = () => {
-    const rawRows = SAMPLE_CSV.split('\n').map(line => {
-      const result = [];
+  const loadSampleData = (): void => {
+    const rawRows: RawRow[] = SAMPLE_CSV.split('\n').map((line): RawRow => {
+      const result: string[] = [];
       let current = '';
       let inQuotes = false;
       for (let i = 0; i < line.length; i++) {
@@ -511,12 +568,12 @@ export default function App() {
   // ==========================================
   // 下載輸出模組 (多工作表: Data + KPI)
   // ==========================================
-  const handleDownload = (type) => {
-    const XLSX = typeof window !== 'undefined' ? window.XLSX : null;
-    if (!XLSX) {
-      alert("⚠️ 試算表產生套件尚未加載完畢，請稍候再試！");
+  const handleDownload = (type: DownloadType): void => {
+    if (!kpis) {
+      alert('⚠️ 尚未產生 KPI，請先載入並完成資料清洗。');
       return;
     }
+
     const rowsToExport = type === 'B' ? versionB : versionA;
     const suffix = type === 'B' ? '版本B_純明細分析表' : '版本A_含小計對帳表';
     
@@ -534,7 +591,7 @@ export default function App() {
     const wb = XLSX.utils.book_new();
 
     // 1. 寫入 "Data" 乾淨明細工作表 (名稱一律強制為 Data)
-    const dataSheetData = [headers];
+    const dataSheetData: CellValue[][] = [headers];
     rowsToExport.forEach(r => {
       dataSheetData.push(r.cells);
     });
@@ -542,7 +599,7 @@ export default function App() {
     XLSX.utils.book_append_sheet(wb, wsData, "Data");
 
     // 2. 建立並寫入 "KPI" 數據驗證工作表 (用於對帳比對與公式驗證)
-    const kpiSheetData = [
+    const kpiSheetData: CellValue[][] = [
       ["GAI 銷售日報二次分析 - 數據核對驗證指標表 (Gigi 智慧提供)"],
       [`清洗原始檔案名稱: ${fileName}`],
       [`匯出執行時間: ${yyyy}/${mm}/${dd} ${hh}:${nn}:${ss}`],
